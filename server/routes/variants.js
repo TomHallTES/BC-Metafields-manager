@@ -1,0 +1,114 @@
+const express = require('express');
+const { bc, batchProcess } = require('../lib/bcClient');
+
+const router = express.Router();
+
+// GET /api/variants/:productId — list all variants with their metafields
+router.get('/:productId', async (req, res, next) => {
+  try {
+    const { productId } = req.params;
+    const { data: variantData } = await bc.get(`/v3/catalog/products/${productId}/variants`, {
+      params: { limit: 250 },
+    });
+    const variants = variantData.data || [];
+
+    // Fetch metafields for each variant
+    const { results } = await batchProcess(
+      variants,
+      async (variant) => {
+        const { data } = await bc.get(
+          `/v3/catalog/products/${productId}/variants/${variant.id}/metafields`,
+          { params: { limit: 250 } }
+        );
+        return { ...variant, metafields: data.data || [] };
+      },
+      { batchSize: 10, delayMs: 300 }
+    );
+
+    res.json({ data: results });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/variants/:productId/:variantId — create variant metafield
+router.post('/:productId/:variantId', async (req, res, next) => {
+  try {
+    const { productId, variantId } = req.params;
+    const { data } = await bc.post(
+      `/v3/catalog/products/${productId}/variants/${variantId}/metafields`,
+      req.body
+    );
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/variants/:productId/:variantId/:metafieldId
+router.put('/:productId/:variantId/:metafieldId', async (req, res, next) => {
+  try {
+    const { productId, variantId, metafieldId } = req.params;
+    const { data } = await bc.put(
+      `/v3/catalog/products/${productId}/variants/${variantId}/metafields/${metafieldId}`,
+      req.body
+    );
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/variants/:productId/:variantId/:metafieldId
+router.delete('/:productId/:variantId/:metafieldId', async (req, res, next) => {
+  try {
+    const { productId, variantId, metafieldId } = req.params;
+    await bc.delete(
+      `/v3/catalog/products/${productId}/variants/${variantId}/metafields/${metafieldId}`
+    );
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/variants/bulk/set
+// Body: { items: [{productId, variantId}], namespace, key, value }
+router.post('/bulk/set', async (req, res, next) => {
+  try {
+    const { items, namespace, key, value, permission_set = 'write' } = req.body;
+    if (!items?.length || !namespace || !key) {
+      return res.status(400).json({ error: 'items, namespace and key are required' });
+    }
+
+    const { results, errors } = await batchProcess(
+      items,
+      async ({ productId, variantId }) => {
+        const { data: existing } = await bc.get(
+          `/v3/catalog/products/${productId}/variants/${variantId}/metafields`,
+          { params: { namespace, key, limit: 1 } }
+        );
+        if (existing.data?.length) {
+          const { data } = await bc.put(
+            `/v3/catalog/products/${productId}/variants/${variantId}/metafields/${existing.data[0].id}`,
+            { value }
+          );
+          return { productId, variantId, action: 'updated', metafield: data.data };
+        } else {
+          const { data } = await bc.post(
+            `/v3/catalog/products/${productId}/variants/${variantId}/metafields`,
+            { namespace, key, value, permission_set }
+          );
+          return { productId, variantId, action: 'created', metafield: data.data };
+        }
+      },
+      { batchSize: 8, delayMs: 500 }
+    );
+
+    res.json({ results, errors, total: items.length, succeeded: results.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+module.exports = router;
