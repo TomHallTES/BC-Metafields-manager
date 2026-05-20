@@ -13,6 +13,9 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const IS_PROD = process.env.NODE_ENV === 'production';
 
+// Trust Railway's proxy so rate limiter works correctly
+app.set('trust proxy', 1);
+
 if (!IS_PROD) {
   app.use(cors({ origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173' }));
 }
@@ -21,6 +24,8 @@ app.use(express.json({ limit: '10mb' }));
 // Basic auth — set APP_USER and APP_PASS in Railway Variables
 const APP_USER = process.env.APP_USER;
 const APP_PASS = process.env.APP_PASS;
+
+console.log('Auth enabled:', !!(APP_USER && APP_PASS));
 
 if (APP_USER && APP_PASS) {
   app.use((req, res, next) => {
