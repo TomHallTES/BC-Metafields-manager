@@ -114,8 +114,8 @@ router.post('/bulk/set', async (req, res, next) => {
 module.exports = router;
 
 // GET /api/variants/visibility?ids=1,2,3&group=42
-// Lightweight endpoint for the storefront script — returns only which product
-// IDs are disabled for a given group. Single call instead of one per product.
+// Checks both product-level AND variant-level metafields.
+// If either is set for the group, the whole product is hidden.
 router.get('/visibility', async (req, res, next) => {
   try {
     const ids = String(req.query.ids || '').split(',').filter(Boolean).map(Number);
@@ -128,17 +128,32 @@ router.get('/visibility', async (req, res, next) => {
     const NAMESPACE = 'visibility';
     const KEY = 'disabled_for_groups';
 
+    function groupMatches(value) {
+      return (value || '').split(',').map(g => g.trim()).includes(group);
+    }
+
     const { results } = await batchProcess(
       ids,
       async (productId) => {
-        // Fetch all variants for this product
+        // Check 1: product-level metafield
+        const { data: productMfData } = await bc.get(
+          `/v3/catalog/products/${productId}/metafields`,
+          { params: { namespace: NAMESPACE, key: KEY, limit: 10 } }
+        );
+        const productMfs = productMfData.data || [];
+        const disabledAtProduct = productMfs.some(mf => groupMatches(mf.value));
+        if (disabledAtProduct) return { productId, isDisabled: true };
+
+        // Check 2: variant-level metafields
         const { data: variantData } = await bc.get(
           `/v3/catalog/products/${productId}/variants`,
           { params: { limit: 250 } }
         );
         const variants = variantData.data || [];
 
-        // Fetch metafields for each variant
+        // No variants — product only, already checked above
+        if (!variants.length) return { productId, isDisabled: false };
+
         const variantMetafields = await Promise.all(
           variants.map(async (v) => {
             const { data } = await bc.get(
@@ -149,15 +164,11 @@ router.get('/visibility', async (req, res, next) => {
           })
         );
 
-        // Product is disabled if any variant has the group in its value
-        const isDisabled = variantMetafields.some((mfs) =>
-          mfs.some((mf) => {
-            const groups = (mf.value || '').split(',').map((g) => g.trim());
-            return groups.includes(group);
-          })
+        const disabledAtVariant = variantMetafields.some(mfs =>
+          mfs.some(mf => groupMatches(mf.value))
         );
 
-        return { productId, isDisabled };
+        return { productId, isDisabled: disabledAtVariant };
       },
       { batchSize: 5, delayMs: 300 }
     );
