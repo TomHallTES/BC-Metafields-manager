@@ -3,11 +3,12 @@ import { products as productsApi, metafields as metafieldsApi, schema as schemaA
 import BulkActionModal from '../components/BulkActionModal';
 import CsvModal from '../components/CsvModal';
 import JsonEditor from '../components/JsonEditor';
+import AddColumnModal from '../components/AddColumnModal';
 
 export default function ProductsPage({ addToast }) {
   const [productList, setProductList] = useState([]);
   const [metaMap, setMetaMap] = useState({});
-  const [schemaFields, setSchemaFields] = useState([]); // shared field definitions
+  const [schemaFields, setSchemaFields] = useState([]);
   const [columns, setColumns] = useState([]);
   const [selected, setSelected] = useState(new Set());
   const [loading, setLoading] = useState(false);
@@ -24,22 +25,30 @@ export default function ProductsPage({ addToast }) {
   const [editValue, setEditValue] = useState('');
   const [showBulk, setShowBulk] = useState(false);
   const [showCsv, setShowCsv] = useState(false);
+  const [showAddColumn, setShowAddColumn] = useState(false);
   const searchTimeout = useRef(null);
 
-  // Load schema + filters on mount
   useEffect(() => {
     productsApi.categories().then((d) => setCategories(d.data || []));
     productsApi.brands().then((d) => setBrands(d.data || []));
     schemaApi.get().then((s) => {
-      setSchemaFields(s.product || []);
+      const fields = s.product || [];
+      setSchemaFields(fields);
+      setColumns(fields.map(f => `${f.namespace}:${f.key}`));
     }).catch(() => {});
   }, []);
 
-  // Merge schema columns with discovered columns — schema always first
-  function buildColumns(schemaFields, discoveredCols) {
-    const schemaCols = schemaFields.map(f => `${f.namespace}:${f.key}`);
-    const extra = discoveredCols.filter(c => !schemaCols.includes(c));
-    return [...schemaCols, ...extra];
+  async function handleAddColumn(fieldDef) {
+    try {
+      const updated = await schemaApi.addField('product', fieldDef);
+      const fields = updated.product || [];
+      setSchemaFields(fields);
+      setColumns(fields.map(f => `${f.namespace}:${f.key}`));
+      setShowAddColumn(false);
+      addToast(`Column "${fieldDef.name || fieldDef.key}" added`, 'success');
+    } catch (err) {
+      addToast(err.response?.data?.error || 'Failed to add column', 'error');
+    }
   }
 
   const loadProducts = useCallback(async () => {
@@ -60,19 +69,6 @@ export default function ProductsPage({ addToast }) {
         setMetaLoading(true);
         const mfData = await metafieldsApi.batchForProducts(ids);
         setMetaMap((prev) => ({ ...prev, ...mfData.data }));
-
-        // Discover any extra columns not in schema
-        const colSet = new Set();
-        Object.values(mfData.data).forEach((mfs) =>
-          mfs.forEach((m) => colSet.add(`${m.namespace}:${m.key}`))
-        );
-
-        setColumns((prev) => {
-          const merged = buildColumns(schemaFields, [...colSet]);
-          // keep any manually added columns too
-          const manual = prev.filter(c => !merged.includes(c));
-          return [...merged, ...manual];
-        });
         setMetaLoading(false);
       }
     } catch {
@@ -80,18 +76,9 @@ export default function ProductsPage({ addToast }) {
     } finally {
       setLoading(false);
     }
-  }, [page, search, categoryId, brandId, schemaFields]);
+  }, [page, search, categoryId, brandId]);
 
   useEffect(() => { loadProducts(); }, [loadProducts]);
-
-  // When schema loads/changes, rebuild columns
-  useEffect(() => {
-    setColumns((prev) => {
-      const schemaCols = schemaFields.map(f => `${f.namespace}:${f.key}`);
-      const extra = prev.filter(c => !schemaCols.includes(c));
-      return [...schemaCols, ...extra];
-    });
-  }, [schemaFields]);
 
   function handleSearchChange(val) {
     clearTimeout(searchTimeout.current);
@@ -139,7 +126,6 @@ export default function ProductsPage({ addToast }) {
         const res = await metafieldsApi.create(productId, { namespace, key, value, permission_set });
         updated = res.data;
         setMetaMap((prev) => ({ ...prev, [productId]: [...(prev[productId] || []), updated] }));
-        if (!columns.includes(col)) setColumns((c) => [...new Set([...c, col])]);
       }
       addToast('Saved', 'success');
     } catch {
@@ -150,7 +136,7 @@ export default function ProductsPage({ addToast }) {
   async function handleBulkConfirm(opts) {
     setShowBulk(false);
     const productIds = [...selected];
-    setProgress({ label: `Processing ${productIds.length} products…`, pct: 0 });
+    setProgress({ label: `Processing ${productIds.length} products…`, pct: 10 });
     try {
       let result;
       if (opts.operation === 'set') result = await metafieldsApi.bulkSet({ productIds, namespace: opts.namespace, key: opts.key, value: opts.value });
@@ -179,19 +165,14 @@ export default function ProductsPage({ addToast }) {
 
     if (isEditing && isJson) {
       return (
-        <td key={col} style={{ minWidth: 200, verticalAlign: 'top', padding: '6px 10px' }}>
-          <JsonEditor
-            value={editValue}
-            onChange={setEditValue}
+        <td key={col} style={{ minWidth: 200, verticalAlign: 'top', padding: '6px 12px' }}>
+          <JsonEditor value={editValue} onChange={setEditValue}
             onCommit={(val) => commitEdit(product.id, col, val)}
-            onCancel={() => setEditingCell(null)}
-          />
+            onCancel={() => setEditingCell(null)} />
         </td>
       );
     }
-
     if (isEditing) {
-      const inputType = fieldDef?.type === 'number' ? 'number' : fieldDef?.type === 'date' ? 'date' : 'text';
       return (
         <td key={col}>
           {fieldDef?.type === 'boolean' ? (
@@ -204,7 +185,8 @@ export default function ProductsPage({ addToast }) {
               <option value="false">false</option>
             </select>
           ) : (
-            <input type={inputType} className="cell-input" autoFocus value={editValue}
+            <input type={fieldDef?.type === 'number' ? 'number' : fieldDef?.type === 'date' ? 'date' : 'text'}
+              className="cell-input" autoFocus value={editValue}
               onChange={(e) => setEditValue(e.target.value)}
               onBlur={() => commitEdit(product.id, col)}
               onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(product.id, col); if (e.key === 'Escape') setEditingCell(null); }} />
@@ -213,20 +195,16 @@ export default function ProductsPage({ addToast }) {
       );
     }
 
-    // Display value — truncate JSON for readability
     let displayVal = mf?.value || '—';
     if (isJson && mf?.value) {
-      try {
-        const parsed = JSON.parse(mf.value);
-        displayVal = JSON.stringify(parsed).substring(0, 40) + (JSON.stringify(parsed).length > 40 ? '…' : '');
-      } catch { displayVal = mf.value.substring(0, 40); }
+      try { const s = JSON.stringify(JSON.parse(mf.value)); displayVal = s.length > 40 ? s.substring(0, 40) + '…' : s; }
+      catch { displayVal = mf.value.substring(0, 40); }
     }
 
     return (
       <td key={col}>
         <span className={`cell-display ${!mf?.value ? 'empty' : ''}`}
-          onClick={() => startEdit(product.id, col)}
-          title={mf?.value || 'Click to edit'}>
+          onClick={() => startEdit(product.id, col)} title={mf?.value || 'Click to edit'}>
           {displayVal}
         </span>
       </td>
@@ -250,15 +228,12 @@ export default function ProductsPage({ addToast }) {
         </select>
         <div className="divider" />
         <button className="btn" onClick={() => setShowCsv(true)}>↑↓ CSV</button>
-        <button className="btn btn-primary" onClick={() => {
-          const col = prompt('Add custom column (namespace:key):');
-          if (col && col.includes(':')) setColumns((c) => [...new Set([...c, col])]);
-        }}>+ Column</button>
+        <button className="btn btn-primary" onClick={() => setShowAddColumn(true)}>+ Column</button>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
           {metaLoading && <span className="spinner" />}
           {pagination && (
             <span style={{ fontSize: 12, color: 'var(--text2)', fontFamily: 'var(--mono)' }}>
-              {pagination.current_page}/{pagination.total_pages} ({pagination.total} products)
+              {pagination.current_page}/{pagination.total_pages} · {pagination.total} products
             </span>
           )}
           <button className="btn btn-sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>←</button>
@@ -277,7 +252,7 @@ export default function ProductsPage({ addToast }) {
       {progress && (
         <div className="progress-wrap">
           <div className="progress-label">{progress.label}</div>
-          <div className="progress-track"><div className="progress-bar" style={{ width: `${progress.pct || 10}%` }} /></div>
+          <div className="progress-track"><div className="progress-bar" style={{ width: `${progress.pct}%` }} /></div>
         </div>
       )}
 
@@ -327,6 +302,7 @@ export default function ProductsPage({ addToast }) {
         )}
       </div>
 
+      {showAddColumn && <AddColumnModal resource="products" onSave={handleAddColumn} onClose={() => setShowAddColumn(false)} />}
       {showBulk && <BulkActionModal selectedCount={selected.size} onConfirm={handleBulkConfirm} onClose={() => setShowBulk(false)} />}
       {showCsv && <CsvModal selectedProductIds={[...selected]} allProductIds={allProductIds} onClose={() => setShowCsv(false)} onImportDone={loadProducts} />}
     </div>
