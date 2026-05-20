@@ -44,3 +44,11 @@ export const csv = {
 };
 
 export default api;
+
+export const schema = {
+  get: () => api.get('/schema').then((r) => r.data),
+  addField: (resource, field) => api.post(`/schema/${resource}`, field).then((r) => r.data),
+  updateField: (resource, namespace, key, field) => api.put(`/schema/${resource}/${namespace}/${key}`, field).then((r) => r.data),
+  deleteField: (resource, namespace, key) => api.delete(`/schema/${resource}/${namespace}/${key}`).then((r) => r.data),
+  save: (schemaData) => api.put('/schema', schemaData).then((r) => r.data),
+};

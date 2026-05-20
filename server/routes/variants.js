@@ -112,3 +112,59 @@ router.post('/bulk/set', async (req, res, next) => {
 });
 
 module.exports = router;
+
+// GET /api/variants/visibility?ids=1,2,3&group=42
+// Lightweight endpoint for the storefront script — returns only which product
+// IDs are disabled for a given group. Single call instead of one per product.
+router.get('/visibility', async (req, res, next) => {
+  try {
+    const ids = String(req.query.ids || '').split(',').filter(Boolean).map(Number);
+    const group = String(req.query.group || '').trim();
+
+    if (!ids.length || !group) {
+      return res.status(400).json({ error: 'ids and group are required' });
+    }
+
+    const NAMESPACE = 'visibility';
+    const KEY = 'disabled_for_groups';
+
+    const { results } = await batchProcess(
+      ids,
+      async (productId) => {
+        // Fetch all variants for this product
+        const { data: variantData } = await bc.get(
+          `/v3/catalog/products/${productId}/variants`,
+          { params: { limit: 250 } }
+        );
+        const variants = variantData.data || [];
+
+        // Fetch metafields for each variant
+        const variantMetafields = await Promise.all(
+          variants.map(async (v) => {
+            const { data } = await bc.get(
+              `/v3/catalog/products/${productId}/variants/${v.id}/metafields`,
+              { params: { namespace: NAMESPACE, key: KEY, limit: 10 } }
+            );
+            return data.data || [];
+          })
+        );
+
+        // Product is disabled if any variant has the group in its value
+        const isDisabled = variantMetafields.some((mfs) =>
+          mfs.some((mf) => {
+            const groups = (mf.value || '').split(',').map((g) => g.trim());
+            return groups.includes(group);
+          })
+        );
+
+        return { productId, isDisabled };
+      },
+      { batchSize: 5, delayMs: 300 }
+    );
+
+    const disabledIds = results.filter((r) => r.isDisabled).map((r) => r.productId);
+    res.json({ group, disabledProductIds: disabledIds });
+  } catch (err) {
+    next(err);
+  }
+});

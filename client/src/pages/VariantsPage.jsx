@@ -1,18 +1,26 @@
 import { useState, useEffect } from 'react';
-import { products as productsApi, variants as variantsApi } from '../lib/api';
+import { products as productsApi, variants as variantsApi, schema as schemaApi } from '../lib/api';
+import JsonEditor from '../components/JsonEditor';
 
 export default function VariantsPage({ addToast }) {
   const [productSearch, setProductSearch] = useState('');
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [productOptions, setProductOptions] = useState([]);
   const [variantRows, setVariantRows] = useState([]);
+  const [schemaFields, setSchemaFields] = useState([]);
   const [columns, setColumns] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [editingCell, setEditingCell] = useState(null);
   const [editValue, setEditValue] = useState('');
 
-  // Search products
+  useEffect(() => {
+    schemaApi.get().then((s) => {
+      setSchemaFields(s.variant || []);
+      setColumns(s.variant?.map(f => `${f.namespace}:${f.key}`) || []);
+    }).catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (!productSearch) return;
     const t = setTimeout(async () => {
@@ -32,14 +40,20 @@ export default function VariantsPage({ addToast }) {
       const rows = data.data || [];
       setVariantRows(rows);
 
-      const colSet = new Set();
+      // Discover extra columns beyond schema
+      const colSet = new Set(schemaFields.map(f => `${f.namespace}:${f.key}`));
       rows.forEach((v) => v.metafields.forEach((m) => colSet.add(`${m.namespace}:${m.key}`)));
-      setColumns([...colSet].sort());
+      setColumns([...colSet]);
     } catch {
       addToast('Failed to load variants', 'error');
     } finally {
       setLoading(false);
     }
+  }
+
+  function getFieldDef(col) {
+    const [ns, k] = col.split(':');
+    return schemaFields.find(f => f.namespace === ns && f.key === k);
   }
 
   function getCell(variantId, col) {
@@ -54,25 +68,26 @@ export default function VariantsPage({ addToast }) {
     setEditValue(mf?.value ?? '');
   }
 
-  async function commitEdit(variantId, col) {
+  async function commitEdit(variantId, col, overrideValue) {
+    const value = overrideValue !== undefined ? overrideValue : editValue;
     setEditingCell(null);
     const variant = variantRows.find((v) => v.id === variantId);
     const [namespace, key] = col.split(':');
     const existing = getCell(variantId, col);
+    const fieldDef = getFieldDef(col);
+    const permission_set = fieldDef?.storefront ? 'read' : 'write';
     try {
       if (existing) {
-        const res = await variantsApi.update(selectedProduct.id, variantId, existing.id, { value: editValue });
+        const res = await variantsApi.update(selectedProduct.id, variantId, existing.id, { value });
         setVariantRows((rows) => rows.map((v) =>
-          v.id === variantId
-            ? { ...v, metafields: v.metafields.map((m) => m.id === existing.id ? res.data : m) }
-            : v
+          v.id === variantId ? { ...v, metafields: v.metafields.map((m) => m.id === existing.id ? res.data : m) } : v
         ));
       } else {
-        const res = await variantsApi.create(selectedProduct.id, variantId, { namespace, key, value: editValue, permission_set: 'write' });
+        const res = await variantsApi.create(selectedProduct.id, variantId, { namespace, key, value, permission_set });
         setVariantRows((rows) => rows.map((v) =>
           v.id === variantId ? { ...v, metafields: [...v.metafields, res.data] } : v
         ));
-        if (!columns.includes(col)) setColumns((c) => [...new Set([...c, col])].sort());
+        if (!columns.includes(col)) setColumns((c) => [...new Set([...c, col])]);
       }
       addToast('Saved', 'success');
     } catch {
@@ -85,22 +100,81 @@ export default function VariantsPage({ addToast }) {
   }
 
   async function handleBulkSet() {
-    const col = prompt('Metafield (namespace:key):');
+    const col = prompt('Metafield column (namespace:key):');
     if (!col || !col.includes(':')) return;
     const value = prompt('Value to set:');
     if (value === null) return;
     const [namespace, key] = col.split(':');
-    const items = [...selected].map((variantId) => {
-      const v = variantRows.find((r) => r.id === variantId);
-      return { productId: selectedProduct.id, variantId, productIdNum: v?.product_id };
-    });
+    const items = [...selected].map((variantId) => ({ productId: selectedProduct.id, variantId }));
     try {
-      const res = await variantsApi.bulkSet({ items: items.map((i) => ({ productId: i.productId, variantId: i.variantId })), namespace, key, value });
+      const res = await variantsApi.bulkSet({ items, namespace, key, value });
       addToast(`Done: ${res.succeeded}/${res.total} succeeded`, 'success');
       await loadVariants(selectedProduct);
     } catch {
       addToast('Bulk set failed', 'error');
     }
+  }
+
+  function renderCell(variant, col) {
+    const mf = getCell(variant.id, col);
+    const fieldDef = getFieldDef(col);
+    const isEditing = editingCell?.variantId === variant.id && editingCell?.col === col;
+    const isJson = fieldDef?.type === 'json';
+
+    if (isEditing && isJson) {
+      return (
+        <td key={col} style={{ minWidth: 200, verticalAlign: 'top', padding: '6px 10px' }}>
+          <JsonEditor
+            value={editValue}
+            onChange={setEditValue}
+            onCommit={(val) => commitEdit(variant.id, col, val)}
+            onCancel={() => setEditingCell(null)}
+          />
+        </td>
+      );
+    }
+
+    if (isEditing) {
+      const inputType = fieldDef?.type === 'number' ? 'number' : fieldDef?.type === 'date' ? 'date' : 'text';
+      return (
+        <td key={col}>
+          {fieldDef?.type === 'boolean' ? (
+            <select className="cell-input" autoFocus value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onBlur={() => commitEdit(variant.id, col)}
+              onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(variant.id, col); if (e.key === 'Escape') setEditingCell(null); }}>
+              <option value="">—</option>
+              <option value="true">true</option>
+              <option value="false">false</option>
+            </select>
+          ) : (
+            <input type={inputType} className="cell-input" autoFocus value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onBlur={() => commitEdit(variant.id, col)}
+              onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(variant.id, col); if (e.key === 'Escape') setEditingCell(null); }} />
+          )}
+        </td>
+      );
+    }
+
+    let displayVal = mf?.value || '—';
+    if (isJson && mf?.value) {
+      try {
+        const parsed = JSON.parse(mf.value);
+        const str = JSON.stringify(parsed);
+        displayVal = str.substring(0, 40) + (str.length > 40 ? '…' : '');
+      } catch { displayVal = mf.value.substring(0, 40); }
+    }
+
+    return (
+      <td key={col}>
+        <span className={`cell-display ${!mf?.value ? 'empty' : ''}`}
+          onClick={() => startEdit(variant.id, col)}
+          title={mf?.value || 'Click to edit'}>
+          {displayVal}
+        </span>
+      </td>
+    );
   }
 
   return (
@@ -122,7 +196,7 @@ export default function VariantsPage({ addToast }) {
           )}
         </div>
         {selectedProduct && (
-          <button className="btn" onClick={() => { setSelectedProduct(null); setVariantRows([]); setColumns([]); }}>✕ Clear</button>
+          <button className="btn" onClick={() => { setSelectedProduct(null); setVariantRows([]); }}>✕ Clear</button>
         )}
         {selected.size > 0 && (
           <>
@@ -131,10 +205,10 @@ export default function VariantsPage({ addToast }) {
             <button className="btn btn-sm" onClick={handleBulkSet}>Bulk set…</button>
           </>
         )}
-        {selectedProduct && columns.length > 0 && (
+        {selectedProduct && (
           <button className="btn btn-primary btn-sm" style={{ marginLeft: 'auto' }} onClick={() => {
-            const col = prompt('New column (namespace:key):');
-            if (col?.includes(':')) setColumns((c) => [...new Set([...c, col])].sort());
+            const col = prompt('Add custom column (namespace:key):');
+            if (col?.includes(':')) setColumns((c) => [...new Set([...c, col])]);
           }}>+ Column</button>
         )}
       </div>
@@ -162,7 +236,16 @@ export default function VariantsPage({ addToast }) {
                 <th>SKU</th>
                 {columns.map((col) => {
                   const [ns, k] = col.split(':');
-                  return <th key={col} style={{ minWidth: 130 }}><span className="col-ns">{ns}</span>{k}</th>;
+                  const def = getFieldDef(col);
+                  return (
+                    <th key={col} style={{ minWidth: 140 }}>
+                      <span className="col-ns">{ns}</span>
+                      {def?.name || k}
+                      {def?.type && def.type !== 'text' && (
+                        <span style={{ fontSize: 10, color: 'var(--text3)', marginLeft: 4 }}>({def.type})</span>
+                      )}
+                    </th>
+                  );
                 })}
               </tr>
             </thead>
@@ -175,28 +258,7 @@ export default function VariantsPage({ addToast }) {
                     <div style={{ fontSize: 11, color: 'var(--text3)' }}>ID: {variant.id}</div>
                   </td>
                   <td className="mono">{variant.sku || '—'}</td>
-                  {columns.map((col) => {
-                    const mf = getCell(variant.id, col);
-                    const isEditing = editingCell?.variantId === variant.id && editingCell?.col === col;
-                    return (
-                      <td key={col}>
-                        {isEditing ? (
-                          <input className="cell-input" autoFocus value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={() => commitEdit(variant.id, col)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') commitEdit(variant.id, col);
-                              if (e.key === 'Escape') setEditingCell(null);
-                            }} />
-                        ) : (
-                          <span className={`cell-display ${!mf?.value ? 'empty' : ''}`}
-                            onClick={() => startEdit(variant.id, col)}>
-                            {mf?.value || '—'}
-                          </span>
-                        )}
-                      </td>
-                    );
-                  })}
+                  {columns.map((col) => renderCell(variant, col))}
                 </tr>
               ))}
             </tbody>

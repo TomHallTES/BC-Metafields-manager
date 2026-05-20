@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ProductsPage from './pages/ProductsPage';
 import VariantsPage from './pages/VariantsPage';
+import SchemaPage from './pages/SchemaPage';
 import Toasts from './components/Toasts';
 import { useToast } from './hooks/useToast';
 
@@ -16,12 +17,11 @@ export default function App() {
           bc-metafields<span>/manager</span>
         </div>
         <nav className="header-tabs">
-          <button className={`tab-btn ${tab === 'products' ? 'active' : ''}`} onClick={() => setTab('products')}>
-            Products
-          </button>
-          <button className={`tab-btn ${tab === 'variants' ? 'active' : ''}`} onClick={() => setTab('variants')}>
-            Variants
-          </button>
+          {['products', 'variants', 'schema'].map((t) => (
+            <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
+              {t === 'schema' ? '⚙ Schema' : t.charAt(0).toUpperCase() + t.slice(1)}
+            </button>
+          ))}
         </nav>
         <div className="header-right">
           <a href="https://github.com" target="_blank" rel="noreferrer"
@@ -38,6 +38,7 @@ export default function App() {
 
       {tab === 'products' && <ProductsPage addToast={addToast} />}
       {tab === 'variants' && <VariantsPage addToast={addToast} />}
+      {tab === 'schema' && <SchemaPage addToast={addToast} />}
 
       <Toasts toasts={toasts} />
     </div>
