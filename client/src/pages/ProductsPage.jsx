@@ -125,7 +125,7 @@ export default function ProductsPage({ addToast }) {
     const [namespace, key] = col.split(':');
     const existing = mfs.find((m) => m.namespace === namespace && m.key === key);
     const fieldDef = getFieldDef(col);
-    const permission_set = fieldDef?.storefront ? 'read' : 'write';
+    const permission_set = fieldDef?.storefront ? 'read_and_sf_access' : 'write';
     try {
       let updated;
       if (existing) {

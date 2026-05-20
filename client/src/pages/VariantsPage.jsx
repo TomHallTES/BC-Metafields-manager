@@ -75,7 +75,7 @@ export default function VariantsPage({ addToast }) {
     const [namespace, key] = col.split(':');
     const existing = getCell(variantId, col);
     const fieldDef = getFieldDef(col);
-    const permission_set = fieldDef?.storefront ? 'read' : 'write';
+    const permission_set = fieldDef?.storefront ? 'read_and_sf_access' : 'write';
     try {
       if (existing) {
         const res = await variantsApi.update(selectedProduct.id, variantId, existing.id, { value });

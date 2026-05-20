@@ -42,12 +42,20 @@ router.get('/products/batch', async (req, res, next) => {
   }
 });
 
+// Valid BC permission_set values
+const VALID_PERMISSIONS = ['app_only', 'read', 'write', 'read_and_sf_access'];
+function sanitisePermission(p) {
+  if (VALID_PERMISSIONS.includes(p)) return p;
+  return 'write';
+}
+
 // POST /api/metafields/product/:productId — create
 router.post('/product/:productId', async (req, res, next) => {
   try {
+    const body = { ...req.body, permission_set: sanitisePermission(req.body.permission_set) };
     const { data } = await bc.post(
       `/v3/catalog/products/${req.params.productId}/metafields`,
-      req.body
+      body
     );
     res.json(data);
   } catch (err) {
