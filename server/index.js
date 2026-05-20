@@ -18,6 +18,25 @@ if (!IS_PROD) {
 }
 app.use(express.json({ limit: '10mb' }));
 
+// Basic auth — set APP_USER and APP_PASS in Railway Variables
+const APP_USER = process.env.APP_USER;
+const APP_PASS = process.env.APP_PASS;
+
+if (APP_USER && APP_PASS) {
+  app.use((req, res, next) => {
+    if (req.path === '/health') return next();
+    const auth = req.headers.authorization;
+    if (!auth || !auth.startsWith('Basic ')) {
+      res.set('WWW-Authenticate', 'Basic realm="bc-metafields-manager"');
+      return res.status(401).send('Authentication required');
+    }
+    const [user, pass] = Buffer.from(auth.slice(6), 'base64').toString().split(':');
+    if (user === APP_USER && pass === APP_PASS) return next();
+    res.set('WWW-Authenticate', 'Basic realm="bc-metafields-manager"');
+    return res.status(401).send('Invalid credentials');
+  });
+}
+
 const limiter = rateLimit({ windowMs: 60_000, max: 200, standardHeaders: true });
 app.use('/api', limiter);
 
